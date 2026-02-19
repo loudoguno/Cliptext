@@ -4,23 +4,41 @@ import Carbon.HIToolbox
 /// Writes a ClipboardItem to the system pasteboard and simulates ⌘V.
 enum PasteSimulator {
 
-    static func paste(_ item: ClipboardItem) {
-        writeToClipboard(item)
-        // Small delay lets the pasteboard settle before the simulated keystroke
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            simulateCmdV()
+    /// Capture the app that currently owns keyboard focus.
+    /// Call this BEFORE showing the menu, so we know where to paste.
+    static func captureTargetApp() -> NSRunningApplication? {
+        // First try: AX API — returns the real focused app even if it's an accessory app
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedApp: AnyObject?
+        let result = AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &focusedApp)
+        if result == .success, let appElement = focusedApp {
+            var pid: pid_t = 0
+            if AXUIElementGetPid(appElement as! AXUIElement, &pid) == .success,
+               pid != ProcessInfo.processInfo.processIdentifier {
+                return NSRunningApplication(processIdentifier: pid)
+            }
         }
+
+        // Fallback: frontmost regular app
+        if let frontApp = NSWorkspace.shared.frontmostApplication,
+           frontApp.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            return frontApp
+        }
+
+        return nil
     }
 
-    /// Paste only the plain text representation, stripping all formatting.
-    static func pastePlainText(_ item: ClipboardItem) {
+    static func paste(_ item: ClipboardItem, targetApp: NSRunningApplication? = nil) {
+        writeToClipboard(item)
+        activateAndPaste(targetApp: targetApp)
+    }
+
+    static func pastePlainText(_ item: ClipboardItem, targetApp: NSRunningApplication? = nil) {
         guard let text = item.plainText else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            simulateCmdV()
-        }
+        activateAndPaste(targetApp: targetApp)
     }
 
     static var hasAccessibilityPermission: Bool {
@@ -33,6 +51,17 @@ enum PasteSimulator {
     }
 
     // MARK: - Private
+
+    /// Re-activate the target app, then simulate ⌘V.
+    private static func activateAndPaste(targetApp: NSRunningApplication?) {
+        if let app = targetApp {
+            app.activate()
+        }
+        // Give the app time to come to front before sending the keystroke
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            simulateCmdV()
+        }
+    }
 
     private static func writeToClipboard(_ item: ClipboardItem) {
         let pb = NSPasteboard.general
